@@ -8,6 +8,8 @@ from huggingface_hub import login
 from dotenv import load_dotenv
 # Display the results
 from colorama import init, Fore, Style
+import gradio as gr  # Gradio Import
+
 init(autoreset=True)  # Initialize colorama
 
 # Load environment variables
@@ -30,9 +32,18 @@ texts = []
 keys = []
 
 for champ_id, champ_info in champions_data.items():
-    blurb = champ_info.get('blurb', '')
-    if blurb:
-        texts.append(blurb)
+    if champ_info:
+        # Extract and format all attributes
+        combined_text = ""
+        for key, value in champ_info.items():
+            if isinstance(value, list):
+                value_str = ', '.join(map(str, value))
+            elif isinstance(value, dict):
+                value_str = '; '.join([f"{k}: {v}" for k, v in value.items()])
+            else:
+                value_str = str(value)
+            combined_text += f"{key.capitalize()}: {value_str}. "
+        texts.append(combined_text.strip())
         keys.append(champ_id)
 
 # Load the embedding model and tokenizer
@@ -100,7 +111,7 @@ def search_similar(query_text, k=10):
     return results, similarity_scores
 
 # Load your text generation model (ensure you have access)
-generation_model_id = "meta-llama/Llama-3.2-1B" # Replace with a valid model ID
+generation_model_id = "meta-llama/Llama-3.2-3B-Instruct"  # Replace with a valid model ID
 
 # Load tokenizer and model for text generation
 tokenizer = AutoTokenizer.from_pretrained(generation_model_id)
@@ -117,36 +128,60 @@ pipe = pipeline(
     "text-generation",
     model=model,
     tokenizer=tokenizer,
-    max_new_tokens=500
 )
 
-def generate_text(prompt):
-    output = pipe(prompt)
-    print(output[0]['generated_text'])
+def generate_text(info, query):
+    prompt = f"{info}\nUser Query: {query}\nResponse:"
+    output = pipe(prompt, max_new_tokens=200, temperature=0.7, top_p=0.9)
+    return output[0]['generated_text']
 
-query = "I want to play Fizz tell me about his abilities"
-
-# Perform the search
-results, scores = search_similar(query)
-
-# Modify the print statements in the bottom section:
-print(f"{Fore.CYAN}Query: {Fore.YELLOW}{query}{Style.RESET_ALL}")
-
-print(f"{Fore.BLUE}====================================={Style.RESET_ALL}")
-
-# Generate text based on the top result
-if results:
-    champ_id, blurb = results[0]
-    prompt = f"""tell me the summarize Based on this champion description and answer the following Query:
-Description: {json.dumps(champions_data[champ_id])}""
-Query: {query}"""
+# Gradio Integration: Define the processing function
+def process_query(query):
+    # Perform the search
+    results, scores = search_similar(query)
     
-    print(f"\n{Fore.GREEN}Generating text based on Champion ID: {Fore.MAGENTA}{champ_id}{Style.RESET_ALL}")
-    response = pipe(prompt)[0]['generated_text']
-    print(f"\n{Fore.YELLOW}Generated Response:{Style.RESET_ALL}\n{response}")
+    # Initialize response
+    generated_response = ""
+    top_champions = []
+    
+    # Generate text based on the top result
+    if results:
+        champ_id, blurb = results[0]
+        info = f"""Based on this champion description and try to answer User Query block step by step and use 50 words to summarize the answer:
+Description: {blurb}"""
+        
+        generated_response = generate_text(info, query)
+    
+    # Prepare top similar champions as a list of lists
+    for (champ_id, blurb), score in zip(results, scores):
+        top_champions.append([
+            f"{score:.4f}",
+            champ_id,
+            blurb
+        ])
+    
+    return generated_response, top_champions
 
-print(f"\n{Fore.CYAN}Top similar champions:{Style.RESET_ALL}")
-for (champ_id, blurb), score in zip(results, scores):
-    print(f"{Fore.GREEN}Similarity Score: {Fore.YELLOW}{score:.4f}, "
-          f"{Fore.GREEN}Champion ID: {Fore.MAGENTA}{champ_id}, "
-          f"{Fore.GREEN}Blurb: {Fore.WHITE}{blurb}{Style.RESET_ALL}")
+# Gradio Integration: Set up the Gradio Interface
+iface = gr.Interface(
+    fn=process_query,
+    inputs=gr.Textbox(lines=2, placeholder="Enter your query here...", label="User Query"),
+    outputs=[
+        gr.Textbox(label="Generated Response"),
+        gr.Dataframe(headers=["Similarity Score", "Champion ID", "Blurb"], label="Top Similar Champions")
+    ],
+    title="Champion Information Generator",
+    description="Enter a query about a champion, and receive a generated response along with similar champions.",
+    examples=[
+        ["I want to play Fizz tell me about him"],
+        ["How can I use Ahri effectively?"],
+        ["Best strategies for playing Yasuo"]
+    ],
+    allow_flagging="never"
+)
+
+# Gradio Integration: Launch the Gradio app
+if __name__ == "__main__":
+    iface.launch()
+    # Optionally, you can keep the original print statements for command-line usage
+    # If you prefer to use only the Gradio interface, you can comment out or remove the following section
